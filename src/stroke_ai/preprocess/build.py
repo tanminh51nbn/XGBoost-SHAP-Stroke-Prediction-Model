@@ -5,11 +5,11 @@ from typing import Sequence
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.experimental import enable_iterative_imputer  # noqa: F401
-from sklearn.impute import IterativeImputer, SimpleImputer
+from sklearn.impute import IterativeImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OrdinalEncoder
 
-from stroke_ai.preprocess.transformers import QuantileClipper
+from stroke_ai.preprocess.transformers import CategoricalIterativeImputer, QuantileClipper
 
 
 def infer_feature_types(df: pd.DataFrame) -> tuple[list[str], list[str]]:
@@ -25,6 +25,7 @@ def build_preprocessor(
     clip_lower_quantile: float,
     clip_upper_quantile: float,
     iterative_imputer_max_iter: int,
+    cat_iterative_imputer_max_iter: int = 10,
 ) -> ColumnTransformer:
     numeric_pipeline = Pipeline(
         steps=[
@@ -47,9 +48,17 @@ def build_preprocessor(
         ]
     )
 
+    # CategoricalIterativeImputer runs MICE internally (encode → MICE → round/clip → decode)
+    # then OrdinalEncoder encodes cleanly for XGBoost.
     categorical_pipeline = Pipeline(
         steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
+            (
+                "imputer",
+                CategoricalIterativeImputer(
+                    max_iter=cat_iterative_imputer_max_iter,
+                    random_state=random_state,
+                ),
+            ),
             (
                 "encoder",
                 OrdinalEncoder(

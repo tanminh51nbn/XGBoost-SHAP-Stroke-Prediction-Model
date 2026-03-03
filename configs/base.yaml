@@ -17,7 +17,8 @@ data:
 preprocess:
   clip_lower_quantile: 0.01
   clip_upper_quantile: 0.99
-  iterative_imputer_max_iter: 20
+  iterative_imputer_max_iter: 20 # MICE iterations for numeric features (bmi)
+  cat_iterative_imputer_max_iter: 10 # MICE iterations for categorical features
 
 model:
   objective_metric: pr_auc

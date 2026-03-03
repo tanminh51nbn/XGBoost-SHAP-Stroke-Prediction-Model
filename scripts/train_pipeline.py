@@ -135,6 +135,7 @@ def main() -> None:
         clip_lower_quantile=float(preprocess_cfg["clip_lower_quantile"]),
         clip_upper_quantile=float(preprocess_cfg["clip_upper_quantile"]),
         iterative_imputer_max_iter=int(preprocess_cfg["iterative_imputer_max_iter"]),
+        cat_iterative_imputer_max_iter=int(preprocess_cfg.get("cat_iterative_imputer_max_iter", 10)),
         xgb_default_params=dict(model_cfg["xgb_default_params"]),
     )
     save_json(baseline_report, runtime_paths.reports_dir / "baseline_cv.json")
@@ -156,6 +157,7 @@ def main() -> None:
         clip_lower_quantile=float(preprocess_cfg["clip_lower_quantile"]),
         clip_upper_quantile=float(preprocess_cfg["clip_upper_quantile"]),
         iterative_imputer_max_iter=int(preprocess_cfg["iterative_imputer_max_iter"]),
+        cat_iterative_imputer_max_iter=int(preprocess_cfg.get("cat_iterative_imputer_max_iter", 10)),
     )
 
     best_report = {
@@ -174,6 +176,7 @@ def main() -> None:
         clip_lower_quantile=float(preprocess_cfg["clip_lower_quantile"]),
         clip_upper_quantile=float(preprocess_cfg["clip_upper_quantile"]),
         iterative_imputer_max_iter=int(preprocess_cfg["iterative_imputer_max_iter"]),
+        cat_iterative_imputer_max_iter=int(preprocess_cfg.get("cat_iterative_imputer_max_iter", 10)),
         xgb_params=study.best_params,
     )
     tuned_pipeline.fit(splits.X_train, splits.y_train)
@@ -198,6 +201,7 @@ def main() -> None:
         clip_lower_quantile=float(preprocess_cfg["clip_lower_quantile"]),
         clip_upper_quantile=float(preprocess_cfg["clip_upper_quantile"]),
         iterative_imputer_max_iter=int(preprocess_cfg["iterative_imputer_max_iter"]),
+        cat_iterative_imputer_max_iter=int(preprocess_cfg.get("cat_iterative_imputer_max_iter", 10)),
         xgb_params=study.best_params,
     )
     final_pipeline.fit(X_train_full, y_train_full)

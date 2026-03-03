@@ -57,6 +57,7 @@ def build_training_pipeline(
     clip_lower_quantile: float,
     clip_upper_quantile: float,
     iterative_imputer_max_iter: int,
+    cat_iterative_imputer_max_iter: int = 10,
     xgb_params: dict[str, Any] | None = None,
 ) -> ImbPipeline:
     preprocessor = build_preprocessor(
@@ -66,6 +67,7 @@ def build_training_pipeline(
         clip_lower_quantile=clip_lower_quantile,
         clip_upper_quantile=clip_upper_quantile,
         iterative_imputer_max_iter=iterative_imputer_max_iter,
+        cat_iterative_imputer_max_iter=cat_iterative_imputer_max_iter,
     )
     sampler = build_sampler(
         numeric_features=numeric_features,

@@ -22,6 +22,7 @@ def run_baseline_cv(
     clip_lower_quantile: float,
     clip_upper_quantile: float,
     iterative_imputer_max_iter: int,
+    cat_iterative_imputer_max_iter: int,
     xgb_default_params: dict[str, Any],
 ) -> dict[str, Any]:
     splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
@@ -40,6 +41,7 @@ def run_baseline_cv(
             clip_lower_quantile=clip_lower_quantile,
             clip_upper_quantile=clip_upper_quantile,
             iterative_imputer_max_iter=iterative_imputer_max_iter,
+            cat_iterative_imputer_max_iter=cat_iterative_imputer_max_iter,
             xgb_params=xgb_default_params,
         )
 
