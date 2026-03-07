@@ -23,6 +23,7 @@ from stroke_ai.modeling.metrics import compute_classification_metrics
 from stroke_ai.modeling.pipeline import build_training_pipeline
 from stroke_ai.modeling.risk_stratification import (
     compute_population_tiers,
+    compute_target_top_population_tiers,
     stratify_risk,
     summarise_risk_distribution,
 )
@@ -103,6 +104,7 @@ def main() -> None:
     cv_cfg = config["cv"]
     optuna_cfg = config["optuna"]
     threshold_cfg = config["threshold"]
+    risk_cfg = config.get("risk_stratification", {})
     shap_cfg = config["shap"]
 
     data_path = PROJECT_ROOT / config["paths"]["data_csv"]
@@ -142,6 +144,7 @@ def main() -> None:
         iterative_imputer_max_iter=int(preprocess_cfg["iterative_imputer_max_iter"]),
         cat_iterative_imputer_max_iter=int(preprocess_cfg.get("cat_iterative_imputer_max_iter", 10)),
         xgb_default_params=dict(model_cfg["xgb_default_params"]),
+        sampler_strategy=str(model_cfg.get("sampler_strategy", "borderline_smote")),
     )
     save_json(baseline_report, runtime_paths.reports_dir / "baseline_cv.json")
 
@@ -158,12 +161,15 @@ def main() -> None:
         n_splits=int(cv_cfg["n_splits"]),
         objective_metric=str(model_cfg["objective_metric"]),
         cv_threshold=float(model_cfg.get("cv_threshold", model_cfg["baseline_threshold"])),
+        objective_top_pct=float(model_cfg.get("objective_top_pct", 0.50)),
+        objective_pr_auc_weight=float(model_cfg.get("objective_pr_auc_weight", 0.40)),
         n_trials=final_trials,
         timeout_seconds=timeout_seconds,
         clip_lower_quantile=float(preprocess_cfg["clip_lower_quantile"]),
         clip_upper_quantile=float(preprocess_cfg["clip_upper_quantile"]),
         iterative_imputer_max_iter=int(preprocess_cfg["iterative_imputer_max_iter"]),
         cat_iterative_imputer_max_iter=int(preprocess_cfg.get("cat_iterative_imputer_max_iter", 10)),
+        sampler_strategy=str(model_cfg.get("sampler_strategy", "borderline_smote")),
     )
 
     best_report = {
@@ -184,6 +190,7 @@ def main() -> None:
         iterative_imputer_max_iter=int(preprocess_cfg["iterative_imputer_max_iter"]),
         cat_iterative_imputer_max_iter=int(preprocess_cfg.get("cat_iterative_imputer_max_iter", 10)),
         xgb_params=study.best_params,
+        sampler_strategy=str(model_cfg.get("sampler_strategy", "borderline_smote")),
     )
     tuned_pipeline.fit(splits.X_train, splits.y_train)
 
@@ -207,17 +214,6 @@ def main() -> None:
     selected_threshold = float(threshold_report["selected"]["threshold"])
     save_json(threshold_report, runtime_paths.reports_dir / "threshold_selection.json")
 
-    # ── Population-Based Risk Tiers ──────────────────────────────────────────
-    # Use ALL validation probabilities (positive + negative) to define tiers.
-    # Critical = top 5% of population. With ROC-AUC~0.79, the majority of
-    # true positives will concentrate in the top 5-15% of predictions.
-    adaptive_tiers, tier_thresholds = compute_population_tiers(
-        y_prob_all=valid_prob,
-        stage1_threshold=selected_threshold,
-        top_pct=(0.05, 0.15, 0.35),   # Critical=top5%, High=top15%, Moderate=top35%
-    )
-    save_json(tier_thresholds, runtime_paths.reports_dir / "risk_tier_thresholds.json")
-
     X_train_full = pd.concat([splits.X_train, splits.X_valid], axis=0).reset_index(drop=True)
     y_train_full = pd.concat([splits.y_train, splits.y_valid], axis=0).reset_index(drop=True)
 
@@ -230,8 +226,34 @@ def main() -> None:
         iterative_imputer_max_iter=int(preprocess_cfg["iterative_imputer_max_iter"]),
         cat_iterative_imputer_max_iter=int(preprocess_cfg.get("cat_iterative_imputer_max_iter", 10)),
         xgb_params=study.best_params,
+        sampler_strategy=str(model_cfg.get("sampler_strategy", "borderline_smote")),
     )
     final_pipeline.fit(X_train_full, y_train_full)
+
+    # ── Population-Based Risk Tiers ──────────────────────────────────────────
+    # Derive tier thresholds from the FINAL model score distribution on
+    # train+valid reference data to avoid scale mismatch with refit model.
+    tier_reference_prob = final_pipeline.predict_proba(X_train_full)[:, 1]
+    risk_mode = str(risk_cfg.get("mode", "population_percentile")).strip().lower()
+    if risk_mode == "target_top_percentile":
+        adaptive_tiers, tier_thresholds = compute_target_top_population_tiers(
+            y_prob_all=tier_reference_prob,
+            stage1_threshold=selected_threshold,
+            target_top_pct=float(risk_cfg.get("target_top_pct", 0.50)),
+            critical_within_top_pct=float(risk_cfg.get("critical_within_top_pct", 0.20)),
+            high_within_top_pct=float(risk_cfg.get("high_within_top_pct", 0.50)),
+        )
+    else:
+        raw_top_pct = risk_cfg.get("top_pct", [0.05, 0.15, 0.35])
+        if not isinstance(raw_top_pct, list | tuple) or len(raw_top_pct) != 3:
+            raise ValueError("risk_stratification.top_pct must be a list/tuple of 3 values")
+        top_pct = tuple(float(v) for v in raw_top_pct)
+        adaptive_tiers, tier_thresholds = compute_population_tiers(
+            y_prob_all=tier_reference_prob,
+            stage1_threshold=selected_threshold,
+            top_pct=top_pct,
+        )
+    save_json(tier_thresholds, runtime_paths.reports_dir / "risk_tier_thresholds.json")
 
     test_prob = final_pipeline.predict_proba(splits.X_test)[:, 1]
     test_metrics = compute_classification_metrics(
@@ -255,8 +277,8 @@ def main() -> None:
     model_path = runtime_paths.models_dir / "stroke_pipeline.joblib"
     joblib.dump(final_pipeline, model_path)
 
-    # ── Risk Stratification (adaptive tiers) ──────────────────────────────────
-    # All stage-1 positives are stratified; NONE are discarded.
+    # ── Risk Stratification (population tiers) ────────────────────────────────
+    # Every scored patient is assigned to exactly one tier.
     risk_df = stratify_risk(
         y_prob=test_prob,
         tiers=adaptive_tiers,
@@ -266,6 +288,7 @@ def main() -> None:
         risk_df=risk_df,
         y_true=splits.y_test.to_numpy(),
         tiers=adaptive_tiers,
+        stage1_threshold=selected_threshold,
     )
     risk_df.to_csv(
         runtime_paths.reports_dir / "risk_stratification_patients.csv",
@@ -298,9 +321,9 @@ def main() -> None:
     print(f"- Test PR-AUC: {test_metrics['pr_auc']:.4f}")
     print(f"- Test Brier:  {test_metrics['brier']:.4f}")
     print()
-    print("── Risk Stratification (test set) " + "─" * 30)
+    print("-- Risk Stratification (test set) " + "-" * 30)
     tier_labels = ["critical", "high", "moderate", "low"]
-    tier_icons  = {"critical": "🔴", "high": "🟠", "moderate": "🟡", "low": "🟢"}
+    tier_icons  = {"critical": "[CRIT]", "high": "[HIGH]", "moderate": "[MOD]", "low": "[LOW]"}
     for lbl in tier_labels:
         t = risk_summary["tiers"].get(lbl, {})
         n  = t.get("count", 0)
@@ -310,7 +333,7 @@ def main() -> None:
         print(f"  {tier_icons[lbl]}  {name:<20s}  n={n:4d}  TP={tp}  FP={fp}")
     if "overall" in risk_summary:
         ov = risk_summary["overall"]
-        print(f"\n  Stage-1 Recall (all tiers combined): {ov['recall']:.4f}")
+        print(f"\n  Stage-1 Recall: {ov['stage1_recall']:.4f}  (threshold={ov['stage1_threshold']:.4f})")
 
 
 if __name__ == "__main__":

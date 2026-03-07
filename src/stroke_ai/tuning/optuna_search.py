@@ -35,12 +35,15 @@ def run_optuna_search(
     n_splits: int,
     objective_metric: str,
     cv_threshold: float,
+    objective_top_pct: float,
+    objective_pr_auc_weight: float,
     n_trials: int,
     timeout_seconds: int | None,
     clip_lower_quantile: float,
     clip_upper_quantile: float,
     iterative_imputer_max_iter: int,
     cat_iterative_imputer_max_iter: int,
+    sampler_strategy: str,
 ) -> optuna.Study:
     splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
 
@@ -63,6 +66,7 @@ def run_optuna_search(
                 iterative_imputer_max_iter=iterative_imputer_max_iter,
                 cat_iterative_imputer_max_iter=cat_iterative_imputer_max_iter,
                 xgb_params=params,
+                sampler_strategy=sampler_strategy,
             )
 
             pipeline.fit(X_train_fold, y_train_fold)
@@ -73,6 +77,8 @@ def run_optuna_search(
                 y_prob=y_prob,
                 objective_metric=objective_metric,
                 threshold=cv_threshold,  # consistent with training objective threshold
+                top_pct=objective_top_pct,
+                pr_auc_weight=objective_pr_auc_weight,
             )
             fold_scores.append(score)
 

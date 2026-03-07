@@ -24,6 +24,7 @@ def run_baseline_cv(
     iterative_imputer_max_iter: int,
     cat_iterative_imputer_max_iter: int,
     xgb_default_params: dict[str, Any],
+    sampler_strategy: str,
 ) -> dict[str, Any]:
     splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     fold_results: list[dict[str, Any]] = []
@@ -43,6 +44,7 @@ def run_baseline_cv(
             iterative_imputer_max_iter=iterative_imputer_max_iter,
             cat_iterative_imputer_max_iter=cat_iterative_imputer_max_iter,
             xgb_params=xgb_default_params,
+            sampler_strategy=sampler_strategy,
         )
 
         pipeline.fit(X_train_fold, y_train_fold)

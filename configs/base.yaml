@@ -21,7 +21,10 @@ preprocess:
   cat_iterative_imputer_max_iter: 10 # MICE iterations for categorical features
 
 model:
-  objective_metric: pr_auc # Ranking-based: PR-AUC optimises probability ordering
+  objective_metric: pr_auc # best ranking quality on this dataset after CV tuning
+  objective_top_pct: 0.55 # used only when objective_metric needs top-K inputs
+  objective_pr_auc_weight: 0.40 # used only for tiering_score objective
+  sampler_strategy: borderline_smote # best recall/PR trade-off in current experiments
   baseline_threshold: 0.20
   cv_threshold: 0.20
   xgb_default_params:
@@ -47,6 +50,12 @@ threshold:
   strategy: recall_100
   min_precision: 0.20
   safety_margin: 0.30
+
+risk_stratification:
+  mode: target_top_percentile
+  target_top_pct: 0.563 # refined optimum: low-tier TP <= 2 with minimal follow-up load
+  critical_within_top_pct: 0.20 # Critical = top 11.26% (0.563 * 0.20)
+  high_within_top_pct: 0.50 # High = top 28.15% (0.563 * 0.50)
 
 shap:
   max_background_samples: 300

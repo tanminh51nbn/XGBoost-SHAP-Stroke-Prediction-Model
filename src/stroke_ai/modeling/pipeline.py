@@ -47,13 +47,21 @@ def build_sampler(
     numeric_features: Sequence[str],
     categorical_features: Sequence[str],
     random_state: int,
-) -> BorderlineSMOTE:
+    strategy: str = "borderline_smote",
+) -> BorderlineSMOTE | None:
     """BorderlineSMOTE: generates synthetic samples only near the decision boundary.
 
     Targets 'hard' positive cases — stroke patients who look healthy on paper.
     This is the sampler used in Run 9 (Brier=0.075, ROC-AUC=0.807, best calibration).
     """
-    return BorderlineSMOTE(random_state=random_state, kind="borderline-1")
+    strategy = strategy.strip().lower()
+    if strategy in {"none", "off", "disabled"}:
+        return None
+    if strategy in {"borderline_smote", "borderline-smote", "borderline"}:
+        return BorderlineSMOTE(random_state=random_state, kind="borderline-1")
+    raise ValueError(
+        "Unsupported sampler strategy. Use one of: borderline_smote, none"
+    )
 
 
 def build_training_pipeline(
@@ -65,6 +73,7 @@ def build_training_pipeline(
     iterative_imputer_max_iter: int,
     cat_iterative_imputer_max_iter: int = 10,
     xgb_params: dict[str, Any] | None = None,
+    sampler_strategy: str = "borderline_smote",
 ) -> ImbPipeline:
     preprocessor = build_preprocessor(
         numeric_features=numeric_features,
@@ -79,16 +88,16 @@ def build_training_pipeline(
         numeric_features=numeric_features,
         categorical_features=categorical_features,
         random_state=random_state,
+        strategy=sampler_strategy,
     )
     model = build_xgb_model(random_state=random_state, params=xgb_params)
 
-    pipeline = ImbPipeline(
-        steps=[
-            ("preprocess", preprocessor),
-            ("sampler", sampler),
-            ("model", model),
-        ]
-    )
+    steps: list[tuple[str, Any]] = [("preprocess", preprocessor)]
+    if sampler is not None:
+        steps.append(("sampler", sampler))
+    steps.append(("model", model))
+
+    pipeline = ImbPipeline(steps=steps)
     return pipeline
 
 

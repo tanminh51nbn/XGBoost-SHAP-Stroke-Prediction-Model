@@ -1,23 +1,17 @@
 """risk_stratification.py — Clinical Risk Tiering for Stroke Screening.
 
-Implements WHO/AHA-aligned four-tier risk stratification based on the model's
-predicted stroke probability.  Each tier carries a defined clinical action so
-downstream users (physicians, triage nurses, health-IT systems) know exactly
-what to do with every flagged patient.
+Implements WHO/AHA-aligned four-tier risk stratification based on model
+predicted stroke probability. Each tier carries a defined clinical action so
+downstream users (physicians, triage nurses, health-IT systems) know what to
+do with each scored patient.
 
-Two tier-threshold modes are supported:
-  - FIXED:    Preset thresholds (0.15 / 0.05 / 0.01). Simple but may not
-              match the current model's probability distribution.
-  - ADAPTIVE: Thresholds computed from percentiles of the POSITIVE CLASS
-              probabilities on the validation set. Guarantees that each tier
-              captures roughly equal proportions of true stroke patients,
-              making tier labels clinically meaningful regardless of how
-              scale_pos_weight shifts the raw probability space.
-
-              Critical  ≥ p75 of val-positive probs  (top 25% TP)
-              High      ≥ p50                          (next 25% TP)
-              Moderate  ≥ p25                          (next 25% TP)
-              Low       ≥ stage-1 threshold            (bottom 25% TP)
+Supported threshold modes:
+  - FIXED: Preset thresholds (0.15 / 0.05 / 0.01).
+  - ADAPTIVE_POSITIVE_CLASS: Thresholds from validation positive-only scores.
+  - POPULATION_PERCENTILE: Thresholds from whole-population score percentiles.
+  - TARGET_TOP_PERCENTILE: Convenience wrapper of POPULATION_PERCENTILE where
+    Moderate upper bound is fixed to top-K% of population (for operations
+    planning, e.g. "top 50% gets follow-up").
 
 Thresholds are in raw XGBoost probability space (not calibrated).
 """
@@ -108,7 +102,7 @@ def compute_adaptive_tiers(
     y_prob_positive: np.ndarray,
     stage1_threshold: float = 0.001,
     quantiles: tuple[float, float, float] = (0.75, 0.50, 0.25),
-) -> tuple[list[dict[str, Any]], dict[str, float]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Compute tier thresholds from the positive-class probability distribution.
 
     Uses percentiles of TRUE POSITIVE probabilities on validation set.
@@ -122,13 +116,13 @@ def compute_adaptive_tiers(
     p_high = float(np.percentile(y_prob_positive, q_high * 100))
     p_mod  = float(np.percentile(y_prob_positive, q_mod  * 100))
 
-    p_mod  = max(p_mod,  stage1_threshold)
+    p_mod  = max(p_mod,  stage1_threshold + 1e-6)
     p_high = max(p_high, p_mod  + 1e-6)
     p_crit = max(p_crit, p_high + 1e-6)
 
     thresholds = [p_crit, p_high, p_mod, stage1_threshold]
     tiers = [
-        {**template, "min_prob": round(thresh, 6)}
+        {**template, "min_prob": float(thresh)}
         for template, thresh in zip(_TIER_TEMPLATES, thresholds)
     ]
 
@@ -148,7 +142,7 @@ def compute_population_tiers(
     y_prob_all: np.ndarray,
     stage1_threshold: float = 0.001,
     top_pct: tuple[float, float, float] = (0.05, 0.15, 0.35),
-) -> tuple[list[dict[str, Any]], dict[str, float]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Compute tier thresholds from the ENTIRE POPULATION probability distribution.
 
     This is how clinical risk scores work in practice:
@@ -181,19 +175,22 @@ def compute_population_tiers(
         return DEFAULT_TIERS, {"mode": "fixed_fallback", "reason": "< 20 samples"}
 
     pct_crit, pct_high, pct_mod = top_pct
+    if not (0.0 < pct_crit < pct_high < pct_mod < 1.0):
+        raise ValueError("top_pct must satisfy 0 < critical < high < moderate < 1")
+
     # Convert top-X% to percentile (top 5% → 95th percentile)
     p_crit = float(np.percentile(y_prob_all, (1 - pct_crit) * 100))
     p_high = float(np.percentile(y_prob_all, (1 - pct_high) * 100))
     p_mod  = float(np.percentile(y_prob_all, (1 - pct_mod)  * 100))
 
     # Enforce ordering and floor
-    p_mod  = max(p_mod,  stage1_threshold)
+    p_mod  = max(p_mod,  stage1_threshold + 1e-6)
     p_high = max(p_high, p_mod  + 1e-6)
     p_crit = max(p_crit, p_high + 1e-6)
 
     thresholds = [p_crit, p_high, p_mod, stage1_threshold]
     tiers = [
-        {**template, "min_prob": round(thresh, 6)}
+        {**template, "min_prob": float(thresh)}
         for template, thresh in zip(_TIER_TEMPLATES, thresholds)
     ]
 
@@ -206,13 +203,55 @@ def compute_population_tiers(
         "moderate_min_prob": round(p_mod,  6),
         "low_min_prob":      stage1_threshold,
         "interpretation": (
-            f"Critical = top {int(pct_crit*100)}% of all validation predictions. "
+            f"Critical = top {int(pct_crit*100)}% of all reference predictions. "
             f"High = top {int(pct_high*100)}%. "
             f"Moderate = top {int(pct_mod*100)}%. "
             "With ROC-AUC~0.79, ~70-80%+ of true positives should fall in Critical+High."
         ),
     }
     return tiers, thresholds_report
+
+
+def compute_target_top_population_tiers(
+    y_prob_all: np.ndarray,
+    stage1_threshold: float = 0.001,
+    target_top_pct: float = 0.50,
+    critical_within_top_pct: float = 0.20,
+    high_within_top_pct: float = 0.50,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Create tiers so Moderate+ covers top-K%% of population.
+
+    Example (default):
+      target_top_pct=0.50, critical_within_top_pct=0.20, high_within_top_pct=0.50
+      -> Critical = top 10%%, High = top 25%%, Moderate = top 50%%.
+    """
+    if not (0.0 < target_top_pct < 1.0):
+        raise ValueError("target_top_pct must be in (0, 1)")
+    if not (0.0 < critical_within_top_pct < high_within_top_pct < 1.0):
+        raise ValueError(
+            "critical_within_top_pct and high_within_top_pct must satisfy "
+            "0 < critical_within_top_pct < high_within_top_pct < 1"
+        )
+
+    pct_crit = target_top_pct * critical_within_top_pct
+    pct_high = target_top_pct * high_within_top_pct
+    pct_mod = target_top_pct
+
+    tiers, report = compute_population_tiers(
+        y_prob_all=y_prob_all,
+        stage1_threshold=stage1_threshold,
+        top_pct=(pct_crit, pct_high, pct_mod),
+    )
+    report.update(
+        {
+            "mode": "target_top_percentile",
+            "target_top_pct": float(target_top_pct),
+            "critical_within_top_pct": float(critical_within_top_pct),
+            "high_within_top_pct": float(high_within_top_pct),
+            "derived_top_pct": [float(pct_crit), float(pct_high), float(pct_mod)],
+        }
+    )
+    return tiers, report
 
 
 # ── Core stratification functions ─────────────────────────────────────────────
@@ -222,13 +261,14 @@ def assign_tier(prob: float, tiers: list[dict[str, Any]]) -> dict[str, Any]:
     for tier in sorted(tiers, key=lambda t: t["min_prob"], reverse=True):
         if prob >= tier["min_prob"]:
             return tier
-    return sorted(tiers, key=lambda t: t["min_prob"])[0]
+    return max(tiers, key=lambda t: t["priority"])
 
 
 def stratify_risk(
     y_prob: np.ndarray,
     tiers: list[dict[str, Any]] | None = None,
     patient_ids: list[Any] | None = None,
+    sort_by_priority: bool = True,
 ) -> pd.DataFrame:
     """Assign each sample a clinical risk tier.
 
@@ -270,13 +310,32 @@ def stratify_risk(
     if patient_ids is not None:
         cols = ["patient_id"] + [c for c in df.columns if c != "patient_id"]
         df = df[cols]
-    return df.sort_values("priority").reset_index(drop=True)
+    if sort_by_priority:
+        return df.sort_values("priority").reset_index(drop=True)
+    return df.reset_index(drop=True)
+
+
+def _align_y_true_to_risk_rows(risk_df: pd.DataFrame, y_true: np.ndarray) -> np.ndarray:
+    """Align y_true with risk_df rows even when risk_df is sorted/reordered."""
+    y = np.asarray(y_true).reshape(-1)
+    if len(y) != len(risk_df):
+        raise ValueError("y_true length must match risk_df length")
+
+    if "patient_id" in risk_df.columns:
+        patient_ids = risk_df["patient_id"].to_numpy()
+        if np.issubdtype(patient_ids.dtype, np.number):
+            patient_ids = patient_ids.astype(int)
+            if patient_ids.min(initial=0) >= 0 and patient_ids.max(initial=-1) < len(y):
+                return y[patient_ids]
+
+    return y
 
 
 def summarise_risk_distribution(
     risk_df: pd.DataFrame,
     y_true: np.ndarray | None = None,
     tiers: list[dict[str, Any]] | None = None,
+    stage1_threshold: float | None = None,
 ) -> dict[str, Any]:
     """Compute per-tier counts and (if labels available) TP/FP/Precision.
 
@@ -293,8 +352,10 @@ def summarise_risk_distribution(
     if tiers is None:
         tiers = DEFAULT_TIERS
 
-    tier_map = {t["label"]: t for t in tiers}
     summary: dict[str, Any] = {"tiers": {}, "total_flagged": len(risk_df)}
+    aligned_y_true: np.ndarray | None = None
+    if y_true is not None:
+        aligned_y_true = _align_y_true_to_risk_rows(risk_df, y_true)
 
     for tier_def in sorted(tiers, key=lambda t: t["priority"]):
         label = tier_def["label"]
@@ -309,15 +370,15 @@ def summarise_risk_distribution(
             "clinical_action": tier_def["clinical_action"],
         }
 
-        if y_true is not None and count > 0:
-            tier_true = y_true[mask.values]
+        if aligned_y_true is not None and count > 0:
+            tier_true = aligned_y_true[mask.values]
             tp = int((tier_true == 1).sum())
             fp = int((tier_true == 0).sum())
             entry["true_positives"]  = tp
             entry["false_positives"] = fp
             entry["precision"]       = round(tp / count, 4) if count else 0.0
             entry["stroke_rate_pct"] = round(100 * tp / count, 1) if count else 0.0
-        elif y_true is not None:
+        elif aligned_y_true is not None:
             entry["true_positives"]  = 0
             entry["false_positives"] = 0
             entry["precision"]       = 0.0
@@ -325,17 +386,29 @@ def summarise_risk_distribution(
 
         summary["tiers"][label] = entry
 
-    if y_true is not None:
-        total_pos = int((y_true == 1).sum())
-        captured  = sum(v.get("true_positives", 0) for v in summary["tiers"].values())
+    if aligned_y_true is not None:
+        total_pos = int((aligned_y_true == 1).sum())
+        captured = sum(v.get("true_positives", 0) for v in summary["tiers"].values())
+        if stage1_threshold is not None:
+            stage1_mask = risk_df["probability"].to_numpy() >= float(stage1_threshold)
+            stage1_captured = int((aligned_y_true[stage1_mask] == 1).sum())
+            stage1_flagged = int(stage1_mask.sum())
+            stage1_recall = round(stage1_captured / total_pos, 4) if total_pos else 0.0
+        else:
+            stage1_captured = captured
+            stage1_flagged = len(risk_df)
+            stage1_recall = round(captured / total_pos, 4) if total_pos else 0.0
+
         summary["overall"] = {
             "total_positive_cases": total_pos,
-            "captured_by_stage1":   captured,
-            "recall":               round(captured / total_pos, 4) if total_pos else 0.0,
+            "captured_by_tiers": captured,
+            "stage1_threshold": float(stage1_threshold) if stage1_threshold is not None else None,
+            "stage1_flagged": stage1_flagged,
+            "captured_by_stage1": stage1_captured,
+            "stage1_recall": stage1_recall,
             "note": (
-                "Stage-1 XGBoost (threshold=0.001) guarantees 100% Recall. "
-                "Risk tiers guide clinical prioritisation within the flagged cohort "
-                "— no patient is discarded at any tier."
+                "All scored patients are assigned to a tier. Stage-1 threshold can "
+                "be used as an operational alert gate; tier labels prioritise follow-up."
             ),
         }
 
