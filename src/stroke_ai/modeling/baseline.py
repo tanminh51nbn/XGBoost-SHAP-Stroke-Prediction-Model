@@ -61,6 +61,7 @@ def run_baseline_cv(
         "recall",
         "precision",
         "f1",
+        "f2",
         "specificity",
         "brier",
     ]

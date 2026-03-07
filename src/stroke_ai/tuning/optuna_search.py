@@ -21,6 +21,8 @@ def sample_xgb_params(trial: optuna.Trial) -> dict[str, Any]:
         "gamma": trial.suggest_float("gamma", 0.0, 8.0),
         "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 5.0, log=True),
         "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 20.0, log=True),
+        # scale_pos_weight [5, 25]: Lần 9 Optuna chose ~10.4 → Brier=0.075 (best)
+        "scale_pos_weight": trial.suggest_float("scale_pos_weight", 5.0, 25.0),
     }
 
 
@@ -32,6 +34,7 @@ def run_optuna_search(
     random_state: int,
     n_splits: int,
     objective_metric: str,
+    cv_threshold: float,
     n_trials: int,
     timeout_seconds: int | None,
     clip_lower_quantile: float,
@@ -69,7 +72,7 @@ def run_optuna_search(
                 y_true=y_valid_fold.to_numpy(),
                 y_prob=y_prob,
                 objective_metric=objective_metric,
-                threshold=0.5,
+                threshold=cv_threshold,  # consistent with training objective threshold
             )
             fold_scores.append(score)
 

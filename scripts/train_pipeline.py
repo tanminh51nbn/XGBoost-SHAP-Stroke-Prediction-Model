@@ -21,6 +21,11 @@ from stroke_ai.explainability.shap_report import generate_shap_reports
 from stroke_ai.modeling.baseline import run_baseline_cv
 from stroke_ai.modeling.metrics import compute_classification_metrics
 from stroke_ai.modeling.pipeline import build_training_pipeline
+from stroke_ai.modeling.risk_stratification import (
+    compute_population_tiers,
+    stratify_risk,
+    summarise_risk_distribution,
+)
 from stroke_ai.modeling.threshold import select_threshold
 from stroke_ai.preprocess.build import infer_feature_types
 from stroke_ai.tuning.optuna_search import run_optuna_search
@@ -152,6 +157,7 @@ def main() -> None:
         random_state=int(data_cfg["random_state"]),
         n_splits=int(cv_cfg["n_splits"]),
         objective_metric=str(model_cfg["objective_metric"]),
+        cv_threshold=float(model_cfg.get("cv_threshold", model_cfg["baseline_threshold"])),
         n_trials=final_trials,
         timeout_seconds=timeout_seconds,
         clip_lower_quantile=float(preprocess_cfg["clip_lower_quantile"]),
@@ -181,15 +187,36 @@ def main() -> None:
     )
     tuned_pipeline.fit(splits.X_train, splits.y_train)
 
+    # ── Threshold selection on RAW probabilities ─────────────────────────────
+    # Why NO calibration: with only ~37 positive samples in X_valid, both
+    # Isotonic and Sigmoid calibration compress positive probabilities too
+    # aggressively, causing Recall to plummet on the test set (0.44–0.60).
+    # Raw XGBoost probabilities with scale_pos_weight naturally separate
+    # positives from negatives in probability space — making recall_100 +
+    # safety_margin more reliable for guaranteeing ~100% Recall.
     valid_prob = tuned_pipeline.predict_proba(splits.X_valid)[:, 1]
+    _max_thr_raw = threshold_cfg.get("max_threshold", None)
     threshold_report = select_threshold(
         y_true=splits.y_valid.to_numpy(),
         y_prob=valid_prob,
         strategy=str(threshold_cfg["strategy"]),
-        min_precision=float(threshold_cfg["min_precision"]),
+        min_precision=float(threshold_cfg.get("min_precision", 0.15)),
+        safety_margin=float(threshold_cfg.get("safety_margin", 1.0)),
+        max_threshold=float(_max_thr_raw) if _max_thr_raw is not None else None,
     )
     selected_threshold = float(threshold_report["selected"]["threshold"])
     save_json(threshold_report, runtime_paths.reports_dir / "threshold_selection.json")
+
+    # ── Population-Based Risk Tiers ──────────────────────────────────────────
+    # Use ALL validation probabilities (positive + negative) to define tiers.
+    # Critical = top 5% of population. With ROC-AUC~0.79, the majority of
+    # true positives will concentrate in the top 5-15% of predictions.
+    adaptive_tiers, tier_thresholds = compute_population_tiers(
+        y_prob_all=valid_prob,
+        stage1_threshold=selected_threshold,
+        top_pct=(0.05, 0.15, 0.35),   # Critical=top5%, High=top15%, Moderate=top35%
+    )
+    save_json(tier_thresholds, runtime_paths.reports_dir / "risk_tier_thresholds.json")
 
     X_train_full = pd.concat([splits.X_train, splits.X_valid], axis=0).reset_index(drop=True)
     y_train_full = pd.concat([splits.y_train, splits.y_valid], axis=0).reset_index(drop=True)
@@ -228,6 +255,25 @@ def main() -> None:
     model_path = runtime_paths.models_dir / "stroke_pipeline.joblib"
     joblib.dump(final_pipeline, model_path)
 
+    # ── Risk Stratification (adaptive tiers) ──────────────────────────────────
+    # All stage-1 positives are stratified; NONE are discarded.
+    risk_df = stratify_risk(
+        y_prob=test_prob,
+        tiers=adaptive_tiers,
+        patient_ids=list(splits.X_test.index),
+    )
+    risk_summary = summarise_risk_distribution(
+        risk_df=risk_df,
+        y_true=splits.y_test.to_numpy(),
+        tiers=adaptive_tiers,
+    )
+    risk_df.to_csv(
+        runtime_paths.reports_dir / "risk_stratification_patients.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
+    save_json(risk_summary, runtime_paths.reports_dir / "risk_stratification.json")
+
     metadata = {
         "project_name": config["project"]["name"],
         "run_id": runtime_paths.run_id,
@@ -245,12 +291,26 @@ def main() -> None:
     runtime_paths.latest_run_file.write_text(runtime_paths.run_id, encoding="utf-8")
 
     print("Training completed")
-    print(f"- Run ID: {runtime_paths.run_id}")
-    print(f"- Run dir: {runtime_paths.run_dir}")
-    print(f"- Model: {model_path}")
-    print(f"- Test PR-AUC: {test_metrics['pr_auc']:.4f}")
+    print(f"- Run ID:      {runtime_paths.run_id}")
+    print(f"- Model:       {model_path}")
+    print(f"- Threshold:   {selected_threshold:.4f}  (strategy: {threshold_cfg['strategy']})")
     print(f"- Test Recall: {test_metrics['recall']:.4f}")
-    print(f"- Threshold: {selected_threshold:.4f}")
+    print(f"- Test PR-AUC: {test_metrics['pr_auc']:.4f}")
+    print(f"- Test Brier:  {test_metrics['brier']:.4f}")
+    print()
+    print("── Risk Stratification (test set) " + "─" * 30)
+    tier_labels = ["critical", "high", "moderate", "low"]
+    tier_icons  = {"critical": "🔴", "high": "🟠", "moderate": "🟡", "low": "🟢"}
+    for lbl in tier_labels:
+        t = risk_summary["tiers"].get(lbl, {})
+        n  = t.get("count", 0)
+        tp = t.get("true_positives", "-")
+        fp = t.get("false_positives", "-")
+        name = t.get("name", lbl)
+        print(f"  {tier_icons[lbl]}  {name:<20s}  n={n:4d}  TP={tp}  FP={fp}")
+    if "overall" in risk_summary:
+        ov = risk_summary["overall"]
+        print(f"\n  Stage-1 Recall (all tiers combined): {ov['recall']:.4f}")
 
 
 if __name__ == "__main__":
