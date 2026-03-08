@@ -53,9 +53,9 @@ threshold:
 
 risk_stratification:
   mode: target_top_percentile
-  target_top_pct: 0.563 # refined optimum: low-tier TP <= 2 with minimal follow-up load
-  critical_within_top_pct: 0.20 # Critical = top 11.26% (0.563 * 0.20)
-  high_within_top_pct: 0.50 # High = top 28.15% (0.563 * 0.50)
+  target_top_pct: 0.57
+  critical_within_top_pct: 0.20
+  high_within_top_pct: 0.50
 
 shap:
   max_background_samples: 300
