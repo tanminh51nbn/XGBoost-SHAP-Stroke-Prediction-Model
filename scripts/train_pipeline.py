@@ -22,6 +22,7 @@ from stroke_ai.modeling.baseline import run_baseline_cv
 from stroke_ai.modeling.metrics import compute_classification_metrics
 from stroke_ai.modeling.pipeline import build_training_pipeline
 from stroke_ai.modeling.risk_stratification import (
+    compute_fixed_probability_tiers,
     compute_population_tiers,
     compute_target_top_population_tiers,
     stratify_risk,
@@ -235,7 +236,14 @@ def main() -> None:
     # train+valid reference data to avoid scale mismatch with refit model.
     tier_reference_prob = final_pipeline.predict_proba(X_train_full)[:, 1]
     risk_mode = str(risk_cfg.get("mode", "population_percentile")).strip().lower()
-    if risk_mode == "target_top_percentile":
+    if risk_mode == "fixed_probability":
+        adaptive_tiers, tier_thresholds = compute_fixed_probability_tiers(
+            stage1_threshold=selected_threshold,
+            critical_min_prob=float(risk_cfg.get("critical_min_prob", 0.30)),
+            high_min_prob=float(risk_cfg.get("high_min_prob", 0.15)),
+            moderate_min_prob=float(risk_cfg.get("moderate_min_prob", 0.05)),
+        )
+    elif risk_mode == "target_top_percentile":
         adaptive_tiers, tier_thresholds = compute_target_top_population_tiers(
             y_prob_all=tier_reference_prob,
             stage1_threshold=selected_threshold,

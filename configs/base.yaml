@@ -24,7 +24,7 @@ model:
   objective_metric: pr_auc # best ranking quality on this dataset after CV tuning
   objective_top_pct: 0.55 # used only when objective_metric needs top-K inputs
   objective_pr_auc_weight: 0.40 # used only for tiering_score objective
-  sampler_strategy: borderline_smote # best recall/PR trade-off in current experiments
+  sampler_strategy: borderline_smote # best recall/PR trade-off — SMOTE-Tomek experiment  showed Recall drop to 90%
   baseline_threshold: 0.20
   cv_threshold: 0.20
   xgb_default_params:
@@ -52,10 +52,11 @@ threshold:
   safety_margin: 0.30
 
 risk_stratification:
-  mode: target_top_percentile
-  target_top_pct: 0.57
-  critical_within_top_pct: 0.20
-  high_within_top_pct: 0.50
+  mode: fixed_probability # Absolute probability cut-offs — patient-independent
+  critical_min_prob: 0.30 # >= 30%: Emergency — CT/MRI within 30 minutes
+  high_min_prob: 0.15 # >= 15%: Specialist review within 48h
+  moderate_min_prob: 0.05 # >=  5%: Above population prevalence (~4.8%), monitor 3-6 months
+  # low: anything below stage1_threshold (auto-set by recall_100 strategy)
 
 shap:
   max_background_samples: 300

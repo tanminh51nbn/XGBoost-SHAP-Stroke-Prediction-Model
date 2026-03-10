@@ -6,6 +6,10 @@ downstream users (physicians, triage nurses, health-IT systems) know what to
 do with each scored patient.
 
 Supported threshold modes:
+  - FIXED_PROBABILITY: Absolute probability cut-offs (e.g. >=30% = Critical).
+    Each patient is assessed independently — no population context needed.
+    This is aligned with clinical practice (ACC/AHA ASCVD risk thresholds).
+    Recommended for single-patient triage and production deployment.
   - FIXED: Preset thresholds (0.15 / 0.05 / 0.01).
   - ADAPTIVE_POSITIVE_CLASS: Thresholds from validation positive-only scores.
   - POPULATION_PERCENTILE: Thresholds from whole-population score percentiles.
@@ -254,7 +258,84 @@ def compute_target_top_population_tiers(
     return tiers, report
 
 
-# ── Core stratification functions ─────────────────────────────────────────────
+def compute_fixed_probability_tiers(
+    stage1_threshold: float,
+    critical_min_prob: float,
+    high_min_prob: float,
+    moderate_min_prob: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Create tiers from ABSOLUTE probability thresholds (patient-independent).
+
+    Unlike population-percentile modes, these thresholds do NOT depend on how
+    many or what kind of patients are in the current dataset. A patient with
+    stroke probability 0.35 is Critical regardless of whether they are patient
+    #1 or patient #10,000. This mirrors real clinical risk guidelines such as
+    ACC/AHA 10-year ASCVD risk categories.
+
+    Clinical rationale for default thresholds
+    ------------------------------------------
+    critical  >= 30%  : Stroke probability high enough to warrant immediate
+                        emergency workup. At this level, delaying CT/MRI carries
+                        life-threatening risk.
+    high      >= 15%  : Elevated risk requiring specialist review within 48 h.
+                        Comparable to ACC/AHA "high risk" ASCVD threshold (>=20%)
+                        adjusted downwards given XGBoost raw probability scale.
+    moderate  >= 5%   : Above baseline population prevalence (~4.8%). Warrants
+                        lifestyle counselling and scheduled re-screening.
+    low        < 5%   : Below or near population prevalence. Safe-to-defer;
+                        annual routine check-up is sufficient.
+
+    Parameters
+    ----------
+    stage1_threshold : float
+        The alert gate from threshold.py (recall_100 strategy). Patients below
+        this are in the Low tier. Defaults to 0.001.
+    critical_min_prob : float
+        Minimum probability to be classified as Critical. Default 0.30.
+    high_min_prob : float
+        Minimum probability for High tier. Must be < critical_min_prob. Default 0.15.
+    moderate_min_prob : float
+        Minimum probability for Moderate tier. Must be < high_min_prob. Default 0.05.
+
+    Returns
+    -------
+    tiers : list of tier dicts (same structure as other compute_* functions)
+    thresholds_report : dict for auditing / saving to JSON
+    """
+    # Validate ordering
+    if not (0.0 < moderate_min_prob < high_min_prob < critical_min_prob <= 1.0):
+        raise ValueError(
+            "Probability thresholds must satisfy: "
+            "0 < moderate < high < critical <= 1. "
+            f"Got critical={critical_min_prob}, high={high_min_prob}, "
+            f"moderate={moderate_min_prob}."
+        )
+    # Moderate floor: must sit above stage1 gate so Low tier is well-defined
+    moderate_min_prob = max(moderate_min_prob, stage1_threshold + 1e-6)
+
+    thresholds = [critical_min_prob, high_min_prob, moderate_min_prob, stage1_threshold]
+    tiers = [
+        {**template, "min_prob": float(thresh)}
+        for template, thresh in zip(_TIER_TEMPLATES, thresholds)
+    ]
+
+    thresholds_report = {
+        "mode": "fixed_probability",
+        "critical_min_prob": critical_min_prob,
+        "high_min_prob": high_min_prob,
+        "moderate_min_prob": moderate_min_prob,
+        "low_min_prob": stage1_threshold,
+        "interpretation": (
+            f"Tiers based on absolute stroke probability. "
+            f"Critical >= {int(critical_min_prob*100)}%, "
+            f"High >= {int(high_min_prob*100)}%, "
+            f"Moderate >= {int(moderate_min_prob*100)}%, "
+            f"Low < {int(moderate_min_prob*100)}%. "
+            "Thresholds are patient-independent (ACC/AHA-aligned)."
+        ),
+    }
+    return tiers, thresholds_report
+
 
 def assign_tier(prob: float, tiers: list[dict[str, Any]]) -> dict[str, Any]:
     """Return the matching tier dict for a single probability score."""

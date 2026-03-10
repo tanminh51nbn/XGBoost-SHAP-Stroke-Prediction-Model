@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 from imblearn.over_sampling import BorderlineSMOTE
 from imblearn.pipeline import Pipeline as ImbPipeline
+from imblearn.under_sampling import TomekLinks
+from sklearn.base import BaseEstimator
 from sklearn.calibration import CalibratedClassifierCV
 from xgboost import XGBClassifier
 
@@ -48,20 +50,70 @@ def build_sampler(
     categorical_features: Sequence[str],
     random_state: int,
     strategy: str = "borderline_smote",
-) -> BorderlineSMOTE | None:
-    """BorderlineSMOTE: generates synthetic samples only near the decision boundary.
+) -> BorderlineSMOTE | SMOTETomek | None:
+    """Build the resampling step for the ImbPipeline.
 
-    Targets 'hard' positive cases — stroke patients who look healthy on paper.
-    This is the sampler used in Run 9 (Brier=0.075, ROC-AUC=0.807, best calibration).
+    Strategies
+    ----------
+    borderline_smote
+        BorderlineSMOTE(kind='borderline-1') only.
+        Generates synthetic minority samples near the decision boundary.
+        Targets 'hard' positive cases — stroke patients who look healthy on paper.
+        (Used in runs up to 20260309; Brier=0.075, ROC-AUC=0.807)
+
+    borderline_smote_tomek
+        BorderlineSMOTE(kind='borderline-1') followed by TomekLinks cleaning.
+        Phase 1 (Oversampling): Injects synthetic stroke cases along the decision
+          boundary, forcing XGBoost to learn the hardest cases.
+        Phase 2 (Cleaning): TomekLinks scans for majority-minority nearest-neighbor
+          pairs and removes the majority point, sharpening the decision boundary
+          and reducing overlap noise introduced by oversampling.
+        Expected effect: lower False Positives / higher Specificity while Recall
+          stays stable because the recall_100 threshold strategy self-compensates.
+
+    none / off / disabled
+        No resampling. Only scale_pos_weight handles imbalance.
     """
     strategy = strategy.strip().lower()
     if strategy in {"none", "off", "disabled"}:
         return None
     if strategy in {"borderline_smote", "borderline-smote", "borderline"}:
         return BorderlineSMOTE(random_state=random_state, kind="borderline-1")
+    if strategy in {"borderline_smote_tomek", "borderline-smote-tomek", "smote_tomek"}:
+        return BorderlineSMOTETomek(random_state=random_state)
     raise ValueError(
-        "Unsupported sampler strategy. Use one of: borderline_smote, none"
+        "Unsupported sampler strategy. Use one of: "
+        "borderline_smote, borderline_smote_tomek, none"
     )
+
+
+class BorderlineSMOTETomek(BaseEstimator):
+    """Two-phase resampler: BorderlineSMOTE (oversample) then TomekLinks (clean).
+
+    imblearn's built-in SMOTETomek rejects BorderlineSMOTE as its 'smote'
+    argument (type-checked to base SMOTE only). This class sidesteps that
+    restriction by sequentially calling both samplers manually.
+
+    Phase 1 — BorderlineSMOTE(kind='borderline-1'):
+        Generates synthetic minority samples ONLY near the decision boundary.
+    Phase 2 — TomekLinks():
+        Finds majority-minority nearest-neighbour pairs (Tomek Links) and
+        removes the majority-class point, sharpening the boundary and
+        reducing the overlap noise introduced by Phase 1.
+
+    Satisfies the imblearn sampler interface expected by ImbPipeline
+    (fit_resample method).
+    """
+
+    def __init__(self, random_state: int = 42):
+        self.random_state = random_state
+
+    def fit_resample(self, X, y):
+        X_res, y_res = BorderlineSMOTE(
+            random_state=self.random_state, kind="borderline-1"
+        ).fit_resample(X, y)
+        X_res, y_res = TomekLinks().fit_resample(X_res, y_res)
+        return X_res, y_res
 
 
 def build_training_pipeline(
