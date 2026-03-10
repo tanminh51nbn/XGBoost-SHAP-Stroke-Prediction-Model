@@ -29,6 +29,12 @@ class StrokePredictor:
         self.threshold = float(self.metadata["threshold"])
         self._explainer = None
 
+        self.risk_stratification_path = self.artifacts_dir / "reports" / "risk_stratification.json"
+        self.risk_tiers = None
+        if self.risk_stratification_path.exists():
+            with self.risk_stratification_path.open("r", encoding="utf-8") as f:
+                self.risk_tiers = json.load(f).get("tiers", {})
+
     @staticmethod
     def _resolve_run_dir(artifacts_dir: Path, run_id: str | None) -> tuple[Path, str | None]:
         runs_root = artifacts_dir / "runs"
@@ -91,13 +97,28 @@ class StrokePredictor:
 
         explanation = self.explain_one(X, top_k=top_k)
 
-        return {
+        result = {
             "run_id": self.run_id,
             "threshold": self.threshold,
             "predicted_probability": prob,
             "predicted_label": pred,
             "explanation": explanation,
         }
+
+        if self.risk_tiers:
+            # Sort tiers by min_prob descending to find the highest applicable tier
+            for tier_id, tier_data in sorted(
+                self.risk_tiers.items(), 
+                key=lambda item: item[1].get("min_prob", 0), 
+                reverse=True
+            ):
+                if prob >= tier_data.get("min_prob", 0):
+                    result["risk_tier"] = tier_data.get("name", tier_id)
+                    result["clinical_action"] = tier_data.get("clinical_action", "")
+                    result["followup_recommendation"] = tier_data.get("followup", "")
+                    break
+
+        return result
 
     def explain_one(self, X: pd.DataFrame, top_k: int = 5) -> list[dict[str, float | str]]:
         preprocessor = self.pipeline.named_steps["preprocess"]
