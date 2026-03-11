@@ -24,7 +24,15 @@ model:
   objective_metric: pr_auc # best ranking quality on this dataset after CV tuning
   objective_top_pct: 0.55 # used only when objective_metric needs top-K inputs
   objective_pr_auc_weight: 0.40 # used only for tiering_score objective
-  sampler_strategy: borderline_smote # best recall/PR trade-off — SMOTE-Tomek experiment  showed Recall drop to 90%
+  
+  # -----------------------
+  # Sampler strategy
+  # -----------------------
+  # borderline_smote_allknn
+  # borderline_smote_ncr
+  # borderline_smote_tomek
+  # borderline_smote
+  sampler_strategy: borderline_smote_allknn
   baseline_threshold: 0.20
   cv_threshold: 0.20
   xgb_default_params:
@@ -43,7 +51,7 @@ cv:
   n_splits: 5
 
 optuna:
-  n_trials: 150
+  n_trials: 200
   timeout_seconds: null
 
 threshold:
