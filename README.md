@@ -49,7 +49,7 @@ pip install -r requirements.txt
 python scripts/train_pipeline.py --config configs/base.yaml
 ```
 
-Optional: set a custom run name.
+- Optional: set a custom run name.
 
 ```bash
 python scripts/train_pipeline.py --config configs/base.yaml --run-name exp_pr_auc_v1
@@ -61,10 +61,19 @@ python scripts/train_pipeline.py --config configs/base.yaml --run-name exp_pr_au
 python scripts/predict.py --input-file sample_patient.json
 ```
 
-Optional: use a specific run.
+- Optional: use a specific run.
 
 ```bash
 python scripts/predict.py --input-file sample_patient.json --run-id 20260225_171540
+```
+4. Export the Result to PDF
+- Lastest Run
+```bash
+python scripts/lastest_export_to_pdf.py
+```
+- All off runs
+```bash
+python scripts/all_export_to_pdf.py
 ```
 
 ## Outputs
