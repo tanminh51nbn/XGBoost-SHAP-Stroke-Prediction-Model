@@ -23,8 +23,6 @@ from stroke_ai.modeling.metrics import compute_classification_metrics
 from stroke_ai.modeling.pipeline import build_training_pipeline
 from stroke_ai.modeling.risk_stratification import (
     compute_fixed_probability_tiers,
-    compute_population_tiers,
-    compute_target_top_population_tiers,
     stratify_risk,
     summarise_risk_distribution,
 )
@@ -235,32 +233,18 @@ def main() -> None:
     # Derive tier thresholds from the FINAL model score distribution on
     # train+valid reference data to avoid scale mismatch with refit model.
     tier_reference_prob = final_pipeline.predict_proba(X_train_full)[:, 1]
-    risk_mode = str(risk_cfg.get("mode", "population_percentile")).strip().lower()
-    if risk_mode == "fixed_probability":
-        adaptive_tiers, tier_thresholds = compute_fixed_probability_tiers(
-            stage1_threshold=selected_threshold,
-            critical_min_prob=float(risk_cfg.get("critical_min_prob", 0.30)),
-            high_min_prob=float(risk_cfg.get("high_min_prob", 0.15)),
-            moderate_min_prob=float(risk_cfg.get("moderate_min_prob", 0.05)),
+    risk_mode = str(risk_cfg.get("mode", "fixed_probability")).strip().lower()
+    if risk_mode != "fixed_probability":
+        raise ValueError(
+            f"Unsupported risk_stratification mode: '{risk_mode}'. "
+            "Only 'fixed_probability' is supported. Update configs/base.yaml."
         )
-    elif risk_mode == "target_top_percentile":
-        adaptive_tiers, tier_thresholds = compute_target_top_population_tiers(
-            y_prob_all=tier_reference_prob,
-            stage1_threshold=selected_threshold,
-            target_top_pct=float(risk_cfg.get("target_top_pct", 0.50)),
-            critical_within_top_pct=float(risk_cfg.get("critical_within_top_pct", 0.20)),
-            high_within_top_pct=float(risk_cfg.get("high_within_top_pct", 0.50)),
-        )
-    else:
-        raw_top_pct = risk_cfg.get("top_pct", [0.05, 0.15, 0.35])
-        if not isinstance(raw_top_pct, list | tuple) or len(raw_top_pct) != 3:
-            raise ValueError("risk_stratification.top_pct must be a list/tuple of 3 values")
-        top_pct = tuple(float(v) for v in raw_top_pct)
-        adaptive_tiers, tier_thresholds = compute_population_tiers(
-            y_prob_all=tier_reference_prob,
-            stage1_threshold=selected_threshold,
-            top_pct=top_pct,
-        )
+    adaptive_tiers, tier_thresholds = compute_fixed_probability_tiers(
+        stage1_threshold=selected_threshold,
+        critical_min_prob=float(risk_cfg.get("critical_min_prob", 0.30)),
+        high_min_prob=float(risk_cfg.get("high_min_prob", 0.15)),
+        moderate_min_prob=float(risk_cfg.get("moderate_min_prob", 0.05)),
+    )
     save_json(tier_thresholds, runtime_paths.reports_dir / "risk_tier_thresholds.json")
 
     test_prob = final_pipeline.predict_proba(splits.X_test)[:, 1]
